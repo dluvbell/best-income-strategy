@@ -123,7 +123,6 @@ def run_simulation(inputs, mode, strategies):
         withdrawals = {'user1': {'rrsp': 0, 'tfsa': 0, 'non_reg': 0}, 'user2': {'rrsp': 0, 'tfsa': 0, 'non_reg': 0}}
         
         if mode == 'Automatic Optimization (Recommended)':
-            # This mode targets the pre-tax withdrawal amount and finds the mix that MINIMIZES tax.
             best_mix = {'total_tax': float('inf'), 'rrsp_ratio': 0}
             
             for rrsp_ratio in np.arange(0, 1.01, 0.05):
@@ -145,7 +144,6 @@ def run_simulation(inputs, mode, strategies):
             non_reg_pct = strategies['manual_mix']['non_reg'] / 100
             tfsa_pct = strategies['manual_mix']['tfsa'] / 100
         
-        # Allocate and execute withdrawals based on the determined mix
         total_gross_w = current_withdrawal_target
         total_rrsp_w = min(total_gross_w * rrsp_pct, assets['user1']['rrsp'] + assets['user2']['rrsp'])
         total_non_reg_w = min(total_gross_w * non_reg_pct, assets['user1']['non_reg'] + assets['user2']['non_reg'])
@@ -172,7 +170,6 @@ def run_simulation(inputs, mode, strategies):
         
         final_tax = get_tax_for_withdrawals(withdrawals, assets, common['province'], strategies.get('apply_pension_splitting', False))
         
-        # Execute withdrawals from asset balances
         for user in ['user1', 'user2']:
             for acc_type in ['rrsp', 'tfsa', 'non_reg']:
                 w_amount = withdrawals[user][acc_type]
@@ -181,7 +178,6 @@ def run_simulation(inputs, mode, strategies):
                     cost_base_total = assets[user]['non_reg'] + w_amount
                     assets[user]['non_reg_cost'] *= (1 - w_amount / cost_base_total) if cost_base_total > 0 else 1
 
-        # End of year asset growth
         for user in ['user1', 'user2']:
             for acc_type in ['rrsp', 'tfsa', 'non_reg']:
                 assets[user][acc_type] *= (1 + common['investment_return'])
@@ -246,9 +242,13 @@ with st.sidebar:
         
         st.markdown("**Withdrawal Mix (%)**")
         
-        manual_rrsp_pct = st.slider("RRSP", 0, 100, 50, key='rrsp_pct')
-        max_non_reg = 100 - manual_rrsp_pct
-        manual_nonreg_pct = st.slider("Non-Reg", 0, max_non_reg, min(50, max_non_reg), key='nonreg_pct')
+        col1, col2 = st.columns(2)
+        with col1:
+            manual_rrsp_pct = st.number_input("RRSP", min_value=0, max_value=100, value=50, step=1, key='rrsp_pct_input')
+        with col2:
+            max_non_reg = 100 - manual_rrsp_pct
+            manual_nonreg_pct = st.number_input("Non-Reg", min_value=0, max_value=max_non_reg, value=min(50, max_non_reg), step=1, key='nonreg_pct_input')
+
         manual_tfsa_pct = 100 - manual_rrsp_pct - manual_nonreg_pct
         
         st.info(f"TFSA: **{manual_tfsa_pct}%** (auto-calculated)")
@@ -287,7 +287,10 @@ if calculate_btn:
             st.header("📈 My Plan vs. Automatic Optimization")
             
             manual_results_df = run_simulation(inputs, 'Manual Withdrawal Plan', strategies)
-            auto_results_df = run_simulation(inputs, 'Automatic Optimization (Recommended)', strategies)
+            
+            # FIX: Create a clean, independent strategy dictionary for the benchmark auto-plan
+            auto_strategies = {'apply_pension_splitting': strategies.get('apply_pension_splitting', True)}
+            auto_results_df = run_simulation(inputs, 'Automatic Optimization (Recommended)', auto_strategies)
 
             st.subheader("Asset Growth Comparison: My Plan vs. Optimized")
             comparison_df = pd.DataFrame({
