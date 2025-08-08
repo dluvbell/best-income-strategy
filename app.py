@@ -122,7 +122,7 @@ def run_simulation(inputs, mode, strategies):
 
         withdrawals = {'user1': {'rrsp': 0, 'tfsa': 0, 'non_reg': 0}, 'user2': {'rrsp': 0, 'tfsa': 0, 'non_reg': 0}}
         
-        if mode == 'Automatic Optimization (Recommended)':
+        if mode == 'Automatic Optimization':
             best_mix = {'total_tax': float('inf'), 'rrsp_ratio': 0}
             
             for rrsp_ratio in np.arange(0, 1.01, 0.05):
@@ -202,7 +202,7 @@ def run_simulation(inputs, mode, strategies):
 
 # --- Streamlit UI ---
 st.title("🧠 Canadian Retirement Strategy Simulator")
-st.markdown("Compare and analyze your retirement plan by applying various **withdrawal strategies** and **tax optimization** options.")
+st.markdown("Compare your custom plan against a tax-optimized strategy.")
 
 # --- Sidebar for Inputs ---
 with st.sidebar:
@@ -230,6 +230,20 @@ with st.sidebar:
     inflation_rate = st.slider("Annual Inflation Rate (%)", 0.0, 10.0, 2.0, 0.1) / 100
     province = st.selectbox("Province of Residence", ['ON', 'BC', 'AB'])
     
+    st.divider()
+    st.header("3. My Plan Strategy")
+    st.markdown("**Withdrawal Mix (%)**")
+    apply_pension_splitting_manual = st.checkbox('Apply Pension Income Splitting', value=True, key='manual_split')
+    col1, col2 = st.columns(2)
+    with col1:
+        manual_rrsp_pct = st.number_input("RRSP", min_value=0, max_value=100, value=50, step=1, key='rrsp_pct_input')
+    with col2:
+        max_non_reg = 100 - manual_rrsp_pct
+        manual_nonreg_pct = st.number_input("Non-Reg", min_value=0, max_value=max_non_reg, value=min(50, max_non_reg), step=1, key='nonreg_pct_input')
+
+    manual_tfsa_pct = 100 - manual_rrsp_pct - manual_nonreg_pct
+    st.info(f"TFSA: **{manual_tfsa_pct}%** (auto-calculated)")
+    
     calculate_btn = st.button("🚀 Start Simulation", use_container_width=True, type="primary")
 
 # --- Main Content Area with Tabs ---
@@ -243,50 +257,33 @@ if calculate_btn:
         'common': {'retirement_age': retirement_age, 'end_age': end_age, 'annual_withdrawal': annual_withdrawal, 'investment_return': investment_return, 'inflation_rate': inflation_rate, 'province': province}
     }
 
+    # Prepare strategies for both plans
+    manual_strategies = {
+        'apply_pension_splitting': apply_pension_splitting_manual,
+        'manual_mix': {'rrsp': manual_rrsp_pct, 'non_reg': manual_nonreg_pct, 'tfsa': manual_tfsa_pct}
+    }
+    # Optimized plan always uses pension splitting for a true benchmark
+    auto_strategies = {'apply_pension_splitting': True}
+
     # Create tabs
     tab_manual, tab_optimized, tab_comparison = st.tabs(["My Plan", "Optimized Plan", "📊 Comparison"])
 
     with st.spinner('Running advanced simulations... 🧠'):
-        # --- Manual Plan Calculation ---
+        # --- Run both simulations independently ---
+        manual_results_df = run_simulation(inputs, 'Manual Withdrawal Plan', manual_strategies)
+        auto_results_df = run_simulation(inputs, 'Automatic Optimization', auto_strategies)
+
+        # --- Populate My Plan Tab ---
         with tab_manual:
-            st.header("My Manual Withdrawal Plan")
-            st.markdown("Define your own withdrawal strategy below.")
-            
-            apply_pension_splitting_manual = st.checkbox('Apply Pension Income Splitting', value=True, key='manual_split')
-            
-            st.markdown("**Withdrawal Mix (%)**")
-            col1, col2 = st.columns(2)
-            with col1:
-                manual_rrsp_pct = st.number_input("RRSP", min_value=0, max_value=100, value=50, step=1, key='rrsp_pct_input')
-            with col2:
-                max_non_reg = 100 - manual_rrsp_pct
-                manual_nonreg_pct = st.number_input("Non-Reg", min_value=0, max_value=max_non_reg, value=min(50, max_non_reg), step=1, key='nonreg_pct_input')
-
-            manual_tfsa_pct = 100 - manual_rrsp_pct - manual_nonreg_pct
-            st.info(f"TFSA: **{manual_tfsa_pct}%** (auto-calculated)")
-
-            manual_strategies = {
-                'apply_pension_splitting': apply_pension_splitting_manual,
-                'manual_mix': {'rrsp': manual_rrsp_pct, 'non_reg': manual_nonreg_pct, 'tfsa': manual_tfsa_pct}
-            }
-            
-            manual_results_df = run_simulation(inputs, 'Manual Withdrawal Plan', manual_strategies)
-            st.subheader("Simulation Results (My Plan)")
+            st.header("Simulation Results (My Plan)")
             st.dataframe(manual_results_df.style.format('${:,.0f}', subset=['Start of Year Assets', 'Net Income (After-Tax)', 'Total Tax', 'End of Year Assets']).format('{:.1f}%', subset=['RRSP %', 'Non-Reg %', 'TFSA %']), use_container_width=True)
 
-        # --- Optimized Plan Calculation ---
+        # --- Populate Optimized Plan Tab ---
         with tab_optimized:
-            st.header("Automatic Optimization Plan")
-            st.markdown("This plan automatically finds the most tax-efficient withdrawal mix each year.")
-            
-            apply_pension_splitting_auto = st.checkbox('Apply Pension Income Splitting', value=True, key='auto_split')
-            auto_strategies = {'apply_pension_splitting': apply_pension_splitting_auto}
-            
-            auto_results_df = run_simulation(inputs, 'Automatic Optimization (Recommended)', auto_strategies)
-            st.subheader("Simulation Results (Optimized Plan)")
+            st.header("Simulation Results (Optimized Plan)")
             st.dataframe(auto_results_df.style.format('${:,.0f}', subset=['Start of Year Assets', 'Net Income (After-Tax)', 'Total Tax', 'End of Year Assets']).format('{:.1f}%', subset=['RRSP %', 'Non-Reg %', 'TFSA %']), use_container_width=True)
 
-        # --- Comparison Tab ---
+        # --- Populate Comparison Tab ---
         with tab_comparison:
             st.header("My Plan vs. Automatic Optimization")
             
