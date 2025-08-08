@@ -289,7 +289,7 @@ if calculate_btn:
             manual_results_df = run_simulation(inputs, 'Manual Withdrawal Plan', strategies)
             
             # FIX: Create a clean, independent strategy dictionary for the benchmark auto-plan
-            auto_strategies = {'apply_pension_splitting': strategies.get('apply_pension_splitting', True)}
+            auto_strategies = {'apply_pension_splitting': True}
             auto_results_df = run_simulation(inputs, 'Automatic Optimization (Recommended)', auto_strategies)
 
             st.subheader("Asset Growth Comparison: My Plan vs. Optimized")
