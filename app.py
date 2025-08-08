@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import copy
+import numpy as np
 
 # --- Page Config ---
 st.set_page_config(
@@ -58,6 +59,62 @@ def calculate_oas_clawback(income):
     if income <= OAS_CLAWBACK_THRESHOLD: return 0
     return (income - OAS_CLAWBACK_THRESHOLD) * 0.15
 
+def get_income_and_tax_for_mix(gross_withdrawal, rrsp_ratio, assets, province, apply_pension_splitting):
+    """Calculates the total tax for a given withdrawal mix."""
+    incomes = {'user1': 0, 'user2': 0}
+    
+    # Determine withdrawal amounts from RRSP and Non-Reg based on the ratio
+    total_rrsp_w = gross_withdrawal * rrsp_ratio
+    total_non_reg_w = gross_withdrawal * (1 - rrsp_ratio)
+    
+    # Allocate withdrawals between users (simple 50/50 split for this calculation)
+    withdrawals = {
+        'user1': {'rrsp': total_rrsp_w / 2, 'non_reg': total_non_reg_w / 2},
+        'user2': {'rrsp': total_rrsp_w / 2, 'non_reg': total_non_reg_w / 2}
+    }
+
+    for user in ['user1', 'user2']:
+        # Non-Reg Income
+        w_non_reg = min(withdrawals[user]['non_reg'], assets[user]['non_reg'])
+        if w_non_reg > 0:
+            cost_base_total = assets[user]['non_reg']
+            cost_ratio = assets[user]['non_reg_cost'] / cost_base_total if cost_base_total > 0 else 0
+            capital_gain = w_non_reg * (1 - cost_ratio)
+            incomes[user] += capital_gain * 0.5
+        
+        # RRSP Income
+        w_rrsp = min(withdrawals[user]['rrsp'], assets[user]['rrsp'])
+        incomes[user] += w_rrsp
+
+    # Pension Splitting
+    pension_split_amount = 0
+    if apply_pension_splitting:
+        rrif_income1 = min(withdrawals['user1']['rrsp'], assets['user1']['rrsp'])
+        rrif_income2 = min(withdrawals['user2']['rrsp'], assets['user2']['rrsp'])
+        
+        # Create a copy of incomes to modify for splitting
+        split_incomes = incomes.copy()
+        
+        if (split_incomes['user1']) > (split_incomes['user2']):
+            potential_split = (split_incomes['user1'] - split_incomes['user2']) / 2
+            pension_split_amount = min(rrif_income1 * 0.5, potential_split)
+            split_incomes['user1'] -= pension_split_amount
+            split_incomes['user2'] += pension_split_amount
+        else:
+            potential_split = (split_incomes['user2'] - split_incomes['user1']) / 2
+            pension_split_amount = min(rrif_income2 * 0.5, potential_split)
+            split_incomes['user2'] -= pension_split_amount
+            split_incomes['user1'] += pension_split_amount
+        
+        final_incomes = split_incomes
+    else:
+        final_incomes = incomes
+
+    tax1 = calculate_tax(final_incomes['user1'], province) + calculate_oas_clawback(final_incomes['user1'])
+    tax2 = calculate_tax(final_incomes['user2'], province) + calculate_oas_clawback(final_incomes['user2'])
+    
+    return tax1 + tax2, pension_split_amount
+
 def run_simulation(inputs, mode, strategies):
     assets = copy.deepcopy(inputs['assets'])
     common = inputs['common']
@@ -88,36 +145,61 @@ def run_simulation(inputs, mode, strategies):
 
         # --- Withdrawal Logic ---
         withdrawals = {'user1': {'rrsp': 0, 'tfsa': 0, 'non_reg': 0}, 'user2': {'rrsp': 0, 'tfsa': 0, 'non_reg': 0}}
-        incomes = {'user1': 0, 'user2': 0}
-        
-        needed_after_tax = spending
         
         if mode == 'Automatic Optimization (Recommended)':
-            estimated_tax_rate = 0.20
-            needed_before_tax = needed_after_tax / (1 - estimated_tax_rate)
+            best_mix = {'total_tax': float('inf'), 'rrsp_ratio': 0, 'gross_withdrawal': spending}
             
-            # Withdrawal Order: 1. Non-Reg -> 2. RRSP -> 3. TFSA
-            
-            # Non-Reg withdrawal
-            total_withdrawn = 0
-            for user in ['user1', 'user2']:
-                w_amount = min(needed_before_tax / 2, assets[user]['non_reg'])
-                withdrawals[user]['non_reg'] = w_amount
-                total_withdrawn += w_amount
-            
-            # RRSP withdrawal
-            remaining_needed = needed_before_tax - total_withdrawn
-            if remaining_needed > 0:
-                user_order = sorted(['user1', 'user2'], key=lambda u: assets[u]['rrsp'], reverse=True)
-                for user in user_order:
-                    if remaining_needed > 0:
-                        w_amount = min(remaining_needed, assets[user]['rrsp'])
-                        withdrawals[user]['rrsp'] += w_amount
-                        remaining_needed -= w_amount
-        else: # Manual Withdrawal Plan
-            withdrawals = strategies['manual_withdrawals']
+            # Search Space: Iterate through different RRSP/Non-Reg withdrawal mixes
+            for rrsp_ratio in np.arange(0, 1.01, 0.05): # 0%, 5%, 10%, ... 100% from RRSP
+                
+                # Goal-seek to find the required gross withdrawal for this specific mix
+                gross_withdrawal_guess = spending
+                for _ in range(5): # Iterative solver
+                    tax_for_guess, _ = get_income_and_tax_for_mix(gross_withdrawal_guess, rrsp_ratio, assets, common['province'], strategies.get('apply_pension_splitting', False))
+                    net_available = gross_withdrawal_guess - tax_for_guess
+                    if net_available <= 0: # Avoid division by zero
+                        gross_withdrawal_guess *= 1.2
+                        continue
+                    gross_withdrawal_guess = (spending / net_available) * gross_withdrawal_guess
+                
+                # Check if this mix is the best one found so far
+                final_tax, _ = get_income_and_tax_for_mix(gross_withdrawal_guess, rrsp_ratio, assets, common['province'], strategies.get('apply_pension_splitting', False))
+                
+                if final_tax < best_mix['total_tax']:
+                    best_mix['total_tax'] = final_tax
+                    best_mix['rrsp_ratio'] = rrsp_ratio
+                    best_mix['gross_withdrawal'] = gross_withdrawal_guess
 
-        # Execute withdrawals and calculate income
+            # Use the best mix found for the final withdrawal
+            total_rrsp_w = min(best_mix['gross_withdrawal'] * best_mix['rrsp_ratio'], assets['user1']['rrsp'] + assets['user2']['rrsp'])
+            total_non_reg_w = min(best_mix['gross_withdrawal'] * (1 - best_mix['rrsp_ratio']), assets['user1']['non_reg'] + assets['user2']['non_reg'])
+            
+            # Allocate withdrawals (higher RRSP balance user withdraws first)
+            user_order = sorted(['user1', 'user2'], key=lambda u: assets[u]['rrsp'], reverse=True)
+            for user in user_order:
+                w = min(total_rrsp_w, assets[user]['rrsp'])
+                withdrawals[user]['rrsp'] = w
+                total_rrsp_w -= w
+            
+            for user in user_order: # Simple 50/50 for non-reg for now
+                w = min(total_non_reg_w/2, assets[user]['non_reg'])
+                withdrawals[user]['non_reg'] = w
+                total_non_reg_w -= w
+
+        else: # Manual Withdrawal Plan
+            total_withdrawal_needed = spending
+            rrsp_pct = strategies['manual_mix']['rrsp'] / 100
+            non_reg_pct = strategies['manual_mix']['non_reg'] / 100
+            tfsa_pct = strategies['manual_mix']['tfsa'] / 100
+            
+            # Simple 50/50 split of the required amount
+            withdrawals['user1']['rrsp'] = withdrawals['user2']['rrsp'] = total_withdrawal_needed * rrsp_pct / 2
+            withdrawals['user1']['non_reg'] = withdrawals['user2']['non_reg'] = total_withdrawal_needed * non_reg_pct / 2
+            withdrawals['user1']['tfsa'] = withdrawals['user2']['tfsa'] = total_withdrawal_needed * tfsa_pct / 2
+
+
+        # --- Execute final withdrawals and calculate results ---
+        incomes = {'user1': 0, 'user2': 0}
         for user in ['user1', 'user2']:
             for acc_type in ['rrsp', 'tfsa', 'non_reg']:
                 w_amount = min(withdrawals[user][acc_type], assets[user][acc_type])
@@ -134,36 +216,16 @@ def run_simulation(inputs, mode, strategies):
                     assets[user]['non_reg_cost'] *= (1 - w_amount / cost_base_total) if cost_base_total > 0 else 1
 
         # Apply Pension Income Splitting
-        pension_split_amount = 0
-        if strategies.get('apply_pension_splitting', False):
-            rrif_income1 = withdrawals['user1']['rrsp']
-            rrif_income2 = withdrawals['user2']['rrsp']
-            
-            if (incomes['user1'] - rrif_income1) > (incomes['user2'] - rrif_income2):
-                potential_split = (incomes['user1'] - incomes['user2']) / 2
-                pension_split_amount = min(rrif_income1 * 0.5, potential_split)
-                incomes['user1'] -= pension_split_amount
-                incomes['user2'] += pension_split_amount
-            else:
-                potential_split = (incomes['user2'] - incomes['user1']) / 2
-                pension_split_amount = min(rrif_income2 * 0.5, potential_split)
-                incomes['user2'] -= pension_split_amount
-                incomes['user1'] += pension_split_amount
-
-        # Calculate taxes
-        tax1 = calculate_tax(incomes['user1'], common['province']) + calculate_oas_clawback(incomes['user1'])
-        tax2 = calculate_tax(incomes['user2'], common['province']) + calculate_oas_clawback(incomes['user2'])
-        total_tax = tax1 + tax2
+        final_tax, pension_split_amount = get_income_and_tax_for_mix(sum(v for w in withdrawals.values() for v in w.values()), 0, assets, common['province'], strategies.get('apply_pension_splitting', False))
         
-        # Cover spending and taxes, withdrawing from TFSA if needed
-        net_withdrawal = sum(w for u in ['user1', 'user2'] for w in withdrawals[u].values()) - total_tax
+        # Cover spending and taxes, TFSA as last resort
+        net_withdrawal = sum(w for u in ['user1', 'user2'] for w in withdrawals[u].values()) - final_tax
         shortfall = spending - net_withdrawal
         
         if shortfall > 0:
             for user in ['user1', 'user2']:
                 if shortfall <= 0: break
                 w_amount = min(shortfall, assets[user]['tfsa'])
-                withdrawals[user]['tfsa'] += w_amount
                 assets[user]['tfsa'] -= w_amount
                 shortfall -= w_amount
 
@@ -179,7 +241,7 @@ def run_simulation(inputs, mode, strategies):
 
         results.append({
             'Age': current_age, 'Start of Year Assets': total_assets_start, 'Annual Spending': spending,
-            'Pension Split Amount': pension_split_amount, 'Total Tax': total_tax, 'End of Year Assets': total_assets_end, 'Notes': ''
+            'Pension Split Amount': pension_split_amount, 'Total Tax': final_tax, 'End of Year Assets': total_assets_end, 'Notes': ''
         })
         spending *= (1 + common['inflation_rate'])
         
@@ -223,21 +285,39 @@ with st.sidebar:
     if mode == 'Automatic Optimization (Recommended)':
         strategies['apply_pension_splitting'] = st.checkbox('Apply Pension Income Splitting', value=True)
     else:
-        st.subheader("Annual Withdrawal Plan (Fixed Amount)")
+        st.subheader("**Withdrawal Mix (%)**")
+        st.caption("Set the percentage of spending to withdraw from each account type.")
         strategies['apply_pension_splitting'] = st.checkbox('Apply Pension Income Splitting', value=True)
-        manual_withdrawals = {'user1': {}, 'user2': {}}
-        c1, c2 = st.columns(2)
-        with c1:
-            st.markdown("**User 1 (You)**")
-            manual_withdrawals['user1']['rrsp'] = st.number_input("RRSP Withdrawal", 0, None, 30000, 1000, key='u1_rrsp')
-            manual_withdrawals['user1']['non_reg'] = st.number_input("Non-Reg Withdrawal", 0, None, 0, 1000, key='u1_nonreg')
-            manual_withdrawals['user1']['tfsa'] = st.number_input("TFSA Withdrawal", 0, None, 0, 1000, key='u1_tfsa')
-        with c2:
-            st.markdown("**User 2 (Spouse)**")
-            manual_withdrawals['user2']['rrsp'] = st.number_input("RRSP Withdrawal", 0, None, 30000, 1000, key='u2_rrsp')
-            manual_withdrawals['user2']['non_reg'] = st.number_input("Non-Reg Withdrawal", 0, None, 0, 1000, key='u2_nonreg')
-            manual_withdrawals['user2']['tfsa'] = st.number_input("TFSA Withdrawal", 0, None, 0, 1000, key='u2_tfsa')
-        strategies['manual_withdrawals'] = manual_withdrawals
+        
+        manual_rrsp_pct = st.slider("RRSP", 0, 100, 50, key='rrsp_pct')
+        # The Non-Reg slider's max value is dependent on the RRSP slider
+        max_non_reg = 100 - manual_rrsp_pct
+        manual_nonreg_pct = st.slider("Non-Reg", 0, max_non_reg, min(50, max_non_reg), key='nonreg_pct')
+        manual_tfsa_pct = 100 - manual_rrsp_pct - manual_nonreg_pct
+        
+        st.info(f"TFSA: **{manual_tfsa_pct}%** (auto-calculated)")
+
+        strategies['manual_mix'] = {'rrsp': manual_rrsp_pct, 'non_reg': manual_nonreg_pct, 'tfsa': manual_tfsa_pct}
+        
+        # Display approximate dollar amounts for the first year of retirement
+        years_to_retire = retirement_age - user1_current_age
+        initial_spending_at_retirement = annual_spending * ((1 + inflation_rate) ** years_to_retire)
+        
+        rrsp_draw = initial_spending_at_retirement * (manual_rrsp_pct / 100)
+        nonreg_draw = initial_spending_at_retirement * (manual_nonreg_pct / 100)
+        tfsa_draw = initial_spending_at_retirement * (manual_tfsa_pct / 100)
+
+        st.markdown(f"""
+        <div style="font-size: 0.9rem; color: #555;">
+        Approx. first-year withdrawals:
+        <ul>
+            <li>RRSP: ${rrsp_draw:,.0f}</li>
+            <li>Non-Reg: ${nonreg_draw:,.0f}</li>
+            <li>TFSA: ${tfsa_draw:,.0f}</li>
+        </ul>
+        </div>
+        """, unsafe_allow_html=True)
+
 
     calculate_btn = st.button("🚀 Start Simulation", use_container_width=True, type="primary")
 
@@ -251,7 +331,7 @@ if calculate_btn:
         'common': {'retirement_age': retirement_age, 'end_age': end_age, 'annual_spending': annual_spending, 'investment_return': investment_return, 'inflation_rate': inflation_rate, 'province': province}
     }
 
-    with st.spinner('Calculating... 🏃‍♂️'):
+    with st.spinner('Running advanced simulations... 🧠'):
         if mode == 'Manual Withdrawal Plan':
             st.header("📈 My Plan vs. Automatic Optimization")
             
@@ -262,7 +342,7 @@ if calculate_btn:
             auto_strategies = {'apply_pension_splitting': True}
             auto_results_df = run_simulation(inputs, 'Automatic Optimization (Recommended)', auto_strategies)
 
-            # --- NEW: Create and display comparison chart ---
+            # --- Comparison Chart ---
             st.subheader("Asset Growth Comparison: My Plan vs. Optimized")
             comparison_df = pd.DataFrame({
                 'Age': manual_results_df['Age'],
@@ -270,9 +350,8 @@ if calculate_btn:
                 'Optimized Plan': auto_results_df['End of Year Assets']
             }).set_index('Age')
             st.line_chart(comparison_df)
-            # --- END NEW ---
-
-            # Summary Comparison
+            
+            # --- Summary Comparison ---
             manual_last_year = manual_results_df.iloc[-1]
             auto_last_year = auto_results_df.iloc[-1]
             
@@ -296,9 +375,10 @@ if calculate_btn:
                     st.success(f"**${auto_last_year['End of Year Assets']:,.0f}** remaining at age {end_age}")
                 st.metric(label="Total Taxes Paid", value=f"${auto_total_tax:,.0f}")
             
-            st.info(f"**Analysis:** The automatic optimization strategy could save you **${manual_total_tax - auto_total_tax:,.0f}** in taxes, leaving you with **${auto_last_year['End of Year Assets'] - manual_last_year['End of Year Assets']:,.0f}** more in assets.")
+            tax_savings = manual_total_tax - auto_total_tax
+            asset_difference = auto_last_year['End of Year Assets'] - manual_last_year['End of Year Assets']
+            st.info(f"**Analysis:** The automatic optimization strategy could save you **${tax_savings:,.0f}** in taxes, leaving you with **${asset_difference:,.0f}** more in assets.")
             
-            # Detailed Table for Manual Plan
             st.subheader("Detailed Annual Flow (My Plan)")
             st.dataframe(manual_results_df.style.format('${:,.0f}', subset=['Start of Year Assets', 'Annual Spending', 'Pension Split Amount', 'Total Tax', 'End of Year Assets']), use_container_width=True)
 
