@@ -262,6 +262,16 @@ if calculate_btn:
             auto_strategies = {'apply_pension_splitting': True}
             auto_results_df = run_simulation(inputs, 'Automatic Optimization (Recommended)', auto_strategies)
 
+            # --- NEW: Create and display comparison chart ---
+            st.subheader("Asset Growth Comparison: My Plan vs. Optimized")
+            comparison_df = pd.DataFrame({
+                'Age': manual_results_df['Age'],
+                'My Plan': manual_results_df['End of Year Assets'],
+                'Optimized Plan': auto_results_df['End of Year Assets']
+            }).set_index('Age')
+            st.line_chart(comparison_df)
+            # --- END NEW ---
+
             # Summary Comparison
             manual_last_year = manual_results_df.iloc[-1]
             auto_last_year = auto_results_df.iloc[-1]
