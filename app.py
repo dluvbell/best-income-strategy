@@ -204,6 +204,7 @@ def run_simulation(inputs, mode, strategies):
 st.title("🧠 Canadian Retirement Strategy Simulator")
 st.markdown("Compare and analyze your retirement plan by applying various **withdrawal strategies** and **tax optimization** options.")
 
+# --- Sidebar for Inputs ---
 with st.sidebar:
     st.header("1. Basic Information")
     tab1, tab2 = st.tabs(["User 1 (You)", "User 2 (Spouse)"])
@@ -229,51 +230,11 @@ with st.sidebar:
     inflation_rate = st.slider("Annual Inflation Rate (%)", 0.0, 10.0, 2.0, 0.1) / 100
     province = st.selectbox("Province of Residence", ['ON', 'BC', 'AB'])
     
-    st.divider()
-    st.header("3. Withdrawal Strategy")
-    mode = st.radio("Simulation Mode", ['Automatic Optimization (Recommended)', 'Manual Withdrawal Plan'], horizontal=True)
-    
-    strategies = {}
-    if mode == 'Automatic Optimization (Recommended)':
-        strategies['apply_pension_splitting'] = st.checkbox('Apply Pension Income Splitting', value=True)
-    else:
-        st.subheader("**Manual Withdrawal Plan**")
-        strategies['apply_pension_splitting'] = st.checkbox('Apply Pension Income Splitting', value=True)
-        
-        st.markdown("**Withdrawal Mix (%)**")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            manual_rrsp_pct = st.number_input("RRSP", min_value=0, max_value=100, value=50, step=1, key='rrsp_pct_input')
-        with col2:
-            max_non_reg = 100 - manual_rrsp_pct
-            manual_nonreg_pct = st.number_input("Non-Reg", min_value=0, max_value=max_non_reg, value=min(50, max_non_reg), step=1, key='nonreg_pct_input')
-
-        manual_tfsa_pct = 100 - manual_rrsp_pct - manual_nonreg_pct
-        
-        st.info(f"TFSA: **{manual_tfsa_pct}%** (auto-calculated)")
-
-        strategies['manual_mix'] = {'rrsp': manual_rrsp_pct, 'non_reg': manual_nonreg_pct, 'tfsa': manual_tfsa_pct}
-        
-        rrsp_draw = annual_withdrawal * (manual_rrsp_pct / 100)
-        nonreg_draw = annual_withdrawal * (manual_nonreg_pct / 100)
-        tfsa_draw = annual_withdrawal * (manual_tfsa_pct / 100)
-
-        st.markdown(f"""
-        <div style="font-size: 1rem; color: #FFFFFF; background-color: #4A5568; padding: 10px; border-radius: 5px;">
-        <strong>Approx. first-year withdrawals:</strong>
-        <ul style="margin-top: 5px; list-style-position: inside;">
-            <li>RRSP: ${rrsp_draw:,.0f}</li>
-            <li>Non-Reg: ${nonreg_draw:,.0f}</li>
-            <li>TFSA: ${tfsa_draw:,.0f}</li>
-        </ul>
-        </div>
-        """, unsafe_allow_html=True)
-
     calculate_btn = st.button("🚀 Start Simulation", use_container_width=True, type="primary")
 
-# --- Main Screen ---
+# --- Main Content Area with Tabs ---
 if calculate_btn:
+    # Prepare inputs dictionary
     inputs = {
         'assets': {
             'user1': {'current_age': user1_current_age, 'rrsp': user1_rrsp, 'tfsa': user1_tfsa, 'non_reg': user1_non_reg, 'non_reg_cost': user1_non_reg_cost},
@@ -282,17 +243,54 @@ if calculate_btn:
         'common': {'retirement_age': retirement_age, 'end_age': end_age, 'annual_withdrawal': annual_withdrawal, 'investment_return': investment_return, 'inflation_rate': inflation_rate, 'province': province}
     }
 
-    with st.spinner('Running advanced simulations... 🧠'):
-        if mode == 'Manual Withdrawal Plan':
-            st.header("📈 My Plan vs. Automatic Optimization")
-            
-            manual_results_df = run_simulation(inputs, 'Manual Withdrawal Plan', strategies)
-            
-            # FIX: Create a clean, independent strategy dictionary for the benchmark auto-plan
-            auto_strategies = {'apply_pension_splitting': True}
-            auto_results_df = run_simulation(inputs, 'Automatic Optimization (Recommended)', auto_strategies)
+    # Create tabs
+    tab_manual, tab_optimized, tab_comparison = st.tabs(["My Plan", "Optimized Plan", "📊 Comparison"])
 
-            st.subheader("Asset Growth Comparison: My Plan vs. Optimized")
+    with st.spinner('Running advanced simulations... 🧠'):
+        # --- Manual Plan Calculation ---
+        with tab_manual:
+            st.header("My Manual Withdrawal Plan")
+            st.markdown("Define your own withdrawal strategy below.")
+            
+            apply_pension_splitting_manual = st.checkbox('Apply Pension Income Splitting', value=True, key='manual_split')
+            
+            st.markdown("**Withdrawal Mix (%)**")
+            col1, col2 = st.columns(2)
+            with col1:
+                manual_rrsp_pct = st.number_input("RRSP", min_value=0, max_value=100, value=50, step=1, key='rrsp_pct_input')
+            with col2:
+                max_non_reg = 100 - manual_rrsp_pct
+                manual_nonreg_pct = st.number_input("Non-Reg", min_value=0, max_value=max_non_reg, value=min(50, max_non_reg), step=1, key='nonreg_pct_input')
+
+            manual_tfsa_pct = 100 - manual_rrsp_pct - manual_nonreg_pct
+            st.info(f"TFSA: **{manual_tfsa_pct}%** (auto-calculated)")
+
+            manual_strategies = {
+                'apply_pension_splitting': apply_pension_splitting_manual,
+                'manual_mix': {'rrsp': manual_rrsp_pct, 'non_reg': manual_nonreg_pct, 'tfsa': manual_tfsa_pct}
+            }
+            
+            manual_results_df = run_simulation(inputs, 'Manual Withdrawal Plan', manual_strategies)
+            st.subheader("Simulation Results (My Plan)")
+            st.dataframe(manual_results_df.style.format('${:,.0f}', subset=['Start of Year Assets', 'Net Income (After-Tax)', 'Total Tax', 'End of Year Assets']).format('{:.1f}%', subset=['RRSP %', 'Non-Reg %', 'TFSA %']), use_container_width=True)
+
+        # --- Optimized Plan Calculation ---
+        with tab_optimized:
+            st.header("Automatic Optimization Plan")
+            st.markdown("This plan automatically finds the most tax-efficient withdrawal mix each year.")
+            
+            apply_pension_splitting_auto = st.checkbox('Apply Pension Income Splitting', value=True, key='auto_split')
+            auto_strategies = {'apply_pension_splitting': apply_pension_splitting_auto}
+            
+            auto_results_df = run_simulation(inputs, 'Automatic Optimization (Recommended)', auto_strategies)
+            st.subheader("Simulation Results (Optimized Plan)")
+            st.dataframe(auto_results_df.style.format('${:,.0f}', subset=['Start of Year Assets', 'Net Income (After-Tax)', 'Total Tax', 'End of Year Assets']).format('{:.1f}%', subset=['RRSP %', 'Non-Reg %', 'TFSA %']), use_container_width=True)
+
+        # --- Comparison Tab ---
+        with tab_comparison:
+            st.header("My Plan vs. Automatic Optimization")
+            
+            st.subheader("Asset Growth Comparison")
             comparison_df = pd.DataFrame({
                 'Age': manual_results_df['Age'],
                 'My Plan': manual_results_df['End of Year Assets'],
@@ -320,21 +318,10 @@ if calculate_btn:
             
             tax_savings = manual_total_tax - auto_total_tax
             asset_difference = auto_last_year['End of Year Assets'] - manual_last_year['End of Year Assets']
-            st.info(f"**Analysis:** The automatic optimization strategy could save you **${tax_savings:,.0f}** in taxes, leaving you with **${asset_difference:,.0f}** more in assets.")
-            
-            st.subheader("Detailed Annual Flow (My Plan)")
-            st.dataframe(manual_results_df.style.format('${:,.0f}', subset=['Start of Year Assets', 'Net Income (After-Tax)', 'Total Tax', 'End of Year Assets']).format('{:.1f}%', subset=['RRSP %', 'Non-Reg %', 'TFSA %']), use_container_width=True)
-
-        else: # Automatic Optimization Mode
-            st.header("📊 Automatic Optimization Simulation Results")
-            results_df = run_simulation(inputs, 'Automatic Optimization (Recommended)', strategies)
-            last_year = results_df.iloc[-1]
-            if last_year['Notes'] == 'Assets Depleted':
-                st.error(f"**Assets Depleted:** Based on the simulation, your assets are projected to run out at age **{int(last_year['Age'])}**.")
+            if tax_savings > 0:
+                st.info(f"**Analysis:** The automatic optimization strategy could save you **${tax_savings:,.0f}** in taxes, leaving you with **${asset_difference:,.0f}** more in assets.")
             else:
-                st.success(f"**Plan Successful!** Your assets are projected to last until age **{end_age}**, with an estimated **${last_year['End of Year Assets']:,.0f}** remaining.")
-            
-            st.line_chart(results_df, x='Age', y='End of Year Assets')
-            st.dataframe(results_df.style.format('${:,.0f}', subset=['Start of Year Assets', 'Net Income (After-Tax)', 'Total Tax', 'End of Year Assets']).format('{:.1f}%', subset=['RRSP %', 'Non-Reg %', 'TFSA %']), use_container_width=True)
+                st.warning("**Analysis:** In this scenario, your manual plan is more tax-efficient than the optimized plan. This can happen in specific situations, especially in early retirement years. Well done!")
+
 else:
     st.info("👈 Enter your information in the sidebar and click 'Start Simulation' to begin.")
